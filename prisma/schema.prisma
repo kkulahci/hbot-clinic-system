@@ -1,0 +1,301 @@
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  PATIENT
+  SECRETARY
+  NURSE
+  DOCTOR
+  ADMIN
+}
+
+enum VisitType {
+  EMERGENCY
+  ROUTINE
+  WELLNESS_OFF_LABEL
+}
+
+enum VisitStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum AppointmentType {
+  EXAMINATION
+  DRESSING
+  HBOT_SESSION
+}
+
+model User {
+  id            String          @id @default(cuid())
+  name          String?
+  email         String?         @unique
+  emailVerified DateTime?       @map("email_verified")
+  image         String?
+  passwordHash  String?         @map("password_hash")
+  role          UserRole        @default(PATIENT)
+  
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  accounts      Account[]
+  sessions      Session[]
+  patientProfile PatientProfile?
+  
+  // Audit trail relation
+  createdVisits ClinicalVisit[]  @relation("CreatedByRelation")
+  createdSoaps  SoapRecord[]     @relation("SoapCreatedBy")
+
+  @@map("users")
+}
+
+model Account {
+  id                 String  @id @default(cuid())
+  userId             String  @map("user_id")
+  type               String
+  provider           String
+  providerAccountId  String  @map("provider_account_id")
+  refresh_token      String? @db.Text
+  access_token       String? @db.Text
+  expires_at         Int?
+  token_type         String?
+  scope              String?
+  id_token           String? @db.Text
+  session_state      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model PatientProfile {
+  id               String          @id @default(cuid())
+  userId           String          @unique @map("user_id")
+  tcIdentity       String          @unique @map("tc_identity") @db.VarChar(11)
+  birthDate        DateTime        @map("birth_date")
+  gender           String
+  phone            String
+  address          String?
+  vki              Float?          @map("vki") // Vücut Kitle İndeksi
+  emergencyContact String?         @map("emergency_contact")
+  emergencyPhone   String?         @map("emergency_phone")
+  
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  createdById      String?         @map("created_by_id")
+
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  visits           ClinicalVisit[]
+  appointments     Appointment[]
+  crfResponses     CrfResponse[]
+
+  @@map("patient_profiles")
+}
+
+model ClinicalVisit {
+  id               String          @id @default(cuid())
+  patientProfileId String          @map("patient_profile_id")
+  protocolNumber   String          @unique @map("protocol_number")
+  visitType        VisitType       @map("visit_type")
+  status           VisitStatus     @default(SCHEDULED)
+  visitDate        DateTime        @default(now()) @map("visit_date")
+  
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  createdById      String          @map("created_by_id")
+  updatedById      String?         @map("updated_by_id")
+
+  patient          PatientProfile  @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  creator          User            @relation("CreatedByRelation", fields: [createdById], references: [id])
+  
+  soapRecord       SoapRecord?
+  safetyCheck      HbotSafetyCheck?
+  divingAccident   DivingAccidentDetail?
+  woundAssessments WoundAssessment[]
+  hbotSessions     HbotSession[]
+
+  @@map("clinical_visits")
+}
+
+model SoapRecord {
+  id              String        @id @default(cuid())
+  clinicalVisitId String        @unique @map("clinical_visit_id")
+  subjective      Json          // Hastanın şikayetleri, hikayesi
+  objective       Json          // Fizik muayene, vital bulgular
+  assessment      Json          // Ön tanı, tanı kodları (ICD-10)
+  plan            Json          // Tedavi planı, HBOT kararı
+  
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  createdById     String        @map("created_by_id")
+
+  visit           ClinicalVisit @relation(fields: [clinicalVisitId], references: [id], onDelete: Cascade)
+  creator         User          @relation("SoapCreatedBy", fields: [createdById], references: [id])
+
+  @@map("soap_records")
+}
+
+model HbotSafetyCheck {
+  id                     String        @id @default(cuid())
+  clinicalVisitId        String        @unique @map("clinical_visit_id")
+  hasPneumothorax        Boolean       @default(false) @map("has_pneumothorax")
+  hasClaustrophobia      Boolean       @default(false) @map("has_claustrophobia")
+  hasBleomycinHistory    Boolean       @default(false) @map("has_bleomycin_history")
+  tympanicMembraneStatus String        @map("tympanic_membrane_status")
+  valsalvaSuccess        Boolean       @default(true) @map("valsalva_success")
+  hasPacemakerOrPump     Boolean       @default(false) @map("has_pacemaker_or_pump")
+  additionalNotes        String?       @map("additional_notes")
+  
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
+  createdById            String        @map("created_by_id")
+
+  visit                  ClinicalVisit @relation(fields: [clinicalVisitId], references: [id], onDelete: Cascade)
+
+  @@map("hbot_safety_checks")
+}
+
+model DivingAccidentDetail {
+  id                     String        @id @default(cuid())
+  clinicalVisitId        String        @unique @map("clinical_visit_id")
+  maxDepthMeters         Float         @map("max_depth_meters")
+  gasType                String        @map("gas_type") // Air, Nitrox, Trimix, vb.
+  decompressionViolation Boolean       @default(false) @map("decompression_violation")
+  onSiteOxygenGiven      Boolean       @default(false) @map("on_site_oxygen_given")
+  symptomsOnsetMinutes   Int           @map("symptoms_onset_minutes")
+  
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
+  createdById            String        @map("created_by_id")
+
+  visit                  ClinicalVisit @relation(fields: [clinicalVisitId], references: [id], onDelete: Cascade)
+
+  @@map("diving_accident_details")
+}
+
+model WoundAssessment {
+  id              String        @id @default(cuid())
+  clinicalVisitId String        @map("clinical_visit_id")
+  localization    String        // Yara lokasyonu
+  tissueTissuePct Float         @map("tissue_tissue_pct") // T.I.M.E. modeli - Tissue
+  tissueInfectPct Float         @map("tissue_infect_pct") // T.I.M.E. modeli - Infection
+  tissueMoistPct  Float         @map("tissue_moist_pct")  // T.I.M.E. modeli - Moisture
+  tissueEdgePct   Float         @map("tissue_edge_pct")   // T.I.M.E. modeli - Edge
+  areaCm2         Float         @map("area_cm2")
+  exudateLevel    String        @map("exudate_level")
+  odorPresence    Boolean       @default(false) @map("odor_presence")
+  kstLevel        String?       @map("kst_level") // Kılcal Serbest Dolum Süresi / Dolaşım
+  wagnerGrade     Int?          @map("wagner_grade")
+  sinbadScore     Int?          @map("sinbad_score")
+  
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  createdById     String        @map("created_by_id")
+
+  visit           ClinicalVisit @relation(fields: [clinicalVisitId], references: [id], onDelete: Cascade)
+
+  @@map("wound_assessments")
+}
+
+model HbotSession {
+  id                  String        @id @default(cuid())
+  clinicalVisitId     String        @map("clinical_visit_id")
+  sessionNumber       Int           @map("session_number")
+  protocolAta         Float         @map("protocol_ata")
+  durationMinutes     Int           @map("duration_minutes")
+  preSessionGlucose   Float?        @map("pre_session_glucose")
+  postSessionGlucose  Float?        @map("post_session_glucose")
+  oxygenToxicityNoted Boolean       @default(false) @map("oxygen_toxicity_noted")
+  earBarotraumaNoted  Boolean       @default(false) @map("ear_barotrauma_noted")
+  
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+  createdById         String        @map("created_by_id")
+
+  visit               ClinicalVisit @relation(fields: [clinicalVisitId], references: [id], onDelete: Cascade)
+
+  @@map("hbot_sessions")
+}
+
+model ResearchStudy {
+  id          String           @id @default(cuid())
+  title       String
+  description String?
+  isActive    Boolean          @default(true) @map("is_active")
+  
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  createdById String           @map("created_by_id")
+
+  crfForms    DynamicCrfForm[]
+
+  @@map("research_studies")
+}
+
+model DynamicCrfForm {
+  id              String        @id @default(cuid())
+  researchStudyId String        @map("research_study_id")
+  formName        String        @map("form_name")
+  schemaDefinition Json         @map("schema_definition") // Dinamik form alan tanımı
+  
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  study           ResearchStudy @relation(fields: [researchStudyId], references: [id], onDelete: Cascade)
+  crfResponses    CrfResponse[]
+
+  @@map("dynamic_crf_forms")
+}
+
+model CrfResponse {
+  id               String          @id @default(cuid())
+  dynamicCrfFormId String          @map("dynamic_crf_form_id")
+  patientProfileId String          @map("patient_profile_id")
+  responseData     Json            @map("response_data") // Hastanın doldurduğu dinamik alanlar
+  
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  completedBy      String?         @map("completed_by") // Hasta kendi girdiyse null veya PATIENT, hekim girdiyse ilgili doktor id'si
+
+  form             DynamicCrfForm  @relation(fields: [dynamicCrfFormId], references: [id], onDelete: Cascade)
+  patient          PatientProfile  @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+
+  @@map("crf_responses")
+}
+
+model Appointment {
+  id               String          @id @default(cuid())
+  patientProfileId String          @map("patient_profile_id")
+  appointmentType  AppointmentType @map("appointment_type")
+  startTime        DateTime        @map("start_time")
+  endTime          DateTime        @map("end_time")
+  notes            String?
+  
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  createdById      String          @map("created_by_id")
+
+  patient          PatientProfile  @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+
+  @@map("appointments")
+}
